@@ -180,9 +180,9 @@ def handle_user_message(user_input, conversation_history):
     if not docs:
         return "I couldn't find any relevant documents for your question.", True
 
-    # print(f"\nRetrieved {len(docs)} chunk(s):")
-    # for i, doc in enumerate(docs, 1):
-    #     print(f"\n--- Chunk {i} ---\n{doc}")
+    print(f"\nRetrieved {len(docs)} chunk(s):")
+    for i, doc in enumerate(docs, 1):
+        print(f"\n--- Chunk {i} ---\n{doc}")
 
     answer = get_grounded_answer(user_input, docs, conversation_history)
     return answer, True
