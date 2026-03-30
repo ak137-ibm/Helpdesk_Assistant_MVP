@@ -362,9 +362,9 @@ def handle_user_message(user_input, conversation_history):
             + ESCALATION_SUFFIX
         ), True
 
-    print(f"\nRetrieved {len(docs)} chunk(s):")
-    for i, doc in enumerate(docs, 1):
-        print(f"\n--- Document {i} ---\n{doc}")
+    # print(f"\nRetrieved {len(docs)} chunk(s):")
+    # for i, doc in enumerate(docs, 1):
+    #     print(f"\n--- Document {i} ---\n{doc}")
 
     # ── Step 4: Generate grounded answer ───────────────────────────────
     answer = get_grounded_answer(user_input, docs, conversation_history)
