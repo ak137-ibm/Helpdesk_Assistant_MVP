@@ -20,9 +20,17 @@ Steps:
   
 - To get your AZURE_OPENAI_API_KEY, open and login to Azure Foundry/Microsoft Foundry, [LEFT PANE] Resource Management > Keys and Endpoint 
   
-- To get AZURE_SEARCH_KEY, open and login to Azure AI Search, [LEFT PANE] Settings > Keys > Select either Primary or Secondary Key
+- To get AZURE_SEARCH_KEY, open and login to Azure AI Search, [LEFT PANE] Settings > Keys > Select either Primary or Secondary Key.
 
-- Install the requirements file with "pip install -r requirements.txt"
+- Optional (Recommended) step: Create a Python Virtual Environment with in your TERMINAL
+  - "python3 -m venv venv"
+- Access the Python Virtual Env as follows:
+  - Windows:
+    - venv\Scripts\activate.bat
+  - MacOs/Linux:
+      - source venv/bin/activate
 
-- Run the file with "python app.py"
+- Install the requirements file with "pip install -r requirements.txt" in your TERMINAL
+
+- Run the file with "python app.py" in your TERMINAL
  
