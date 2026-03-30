@@ -37,11 +37,7 @@ openai_client = AzureOpenAI(
     azure_endpoint=OPENAI_ENDPOINT
 )
 
-def get_search_results(query, top_k=3):
-    """
-    Query Azure AI Search and return top_k results.
-    Tries common content fields.
-    """
+def get_search_results(query, top_k=5):
     try:
         results = search_client.search(query, top=top_k)
         docs = []
@@ -57,56 +53,84 @@ def get_search_results(query, top_k=3):
         print(f"Error querying Azure Search: {e}")
         return []
 
-def get_grounded_answer(question, context_docs):
+def get_grounded_answer(question, context_docs, conversation_history):
     """
-    Send context and question to Azure OpenAI and return the answer.
+    Send context, conversation history, and question to Azure OpenAI.
     """
     context = "\n---\n".join(context_docs)
 
-    # ✅ System message carries the grounding instruction
     system_message = (
-        "You are a helpful IT helpdesk assistant. Answer the user's question using ONLY using the context provided below. If the answer cannot be found in the context, say 'I don't have enough information to answer that based on the available documents.'\n\n"
+        "You are a helpful assistant. Answer the user's question using ONLY "
+        "the context provided below. You also have access to the conversation history "
+        "so you can understand follow-up questions and references to previous answers. "
+        "If the answer cannot be found in the context, say "
+        "'I don't have enough information to answer that based on the available documents.'\n\n"
         f"Context:\n{context}"
     )
 
+    # ✅ Build messages: system prompt + full history + new user question
+    messages = [
+        {"role": "system", "content": system_message},
+        *conversation_history,                          # ✅ all prior turns injected here
+        {"role": "user", "content": question}
+    ]
+
     try:
-        print(f"\n[DEBUG] Calling deployment: {OPENAI_DEPLOYMENT}")  # ✅ visibility
+        print(f"\n[DEBUG] Calling deployment: {OPENAI_DEPLOYMENT}")
+        print(f"[DEBUG] Conversation turns so far: {len(conversation_history)}")
         response = openai_client.chat.completions.create(
             model=OPENAI_DEPLOYMENT,
-            messages=[
-                {"role": "system", "content": system_message},
-                {"role": "user", "content": question}  # ✅ clean, just the question
-            ],
+            messages=messages,
             temperature=0.2,
             max_tokens=512
         )
         answer = response.choices[0].message.content.strip()
-        print(f"[DEBUG] Raw response received, length: {len(answer)} chars")  # ✅ visibility
+        print(f"[DEBUG] Raw response received, length: {len(answer)} chars")
         return answer
     except Exception as e:
-        return f"Error from OpenAI: {e}"  # ✅ will now surface real errors
+        return f"Error from OpenAI: {e}"
 
 def main():
-    print("Azure RAG MVP (no LangChain)")
-    print("Type your question (or 'exit' to quit):")
+    print("Azure RAG MVP — with Conversation Memory")
+    print("Type your question (or 'exit' to quit, 'reset' to clear history):")
+
+    conversation_history = []  # ✅ persists across turns in this session
+
     while True:
         question = input("\n> ").strip()
+
         if question.lower() in ("exit", "quit"):
             print("Goodbye!")
             break
+
+        # ✅ Allow user to wipe memory and start fresh
+        if question.lower() == "reset":
+            conversation_history = []
+            print("Conversation history cleared.")
+            continue
+
         if not question:
             continue
+
         print("\nSearching for relevant documents...")
         docs = get_search_results(question, top_k=5)
         if not docs:
             print("No relevant documents found.")
             continue
+
         print(f"Found {len(docs)} relevant document(s).\nPrinting retrieved chunks:")
-        for i, doc in enumerate(docs, 1):
-            print(f"\n--- Chunk {i} ---\n{doc}")
+        # for i, doc in enumerate(docs, 1):
+        #     print(f"\n--- Chunk {i} ---\n{doc}")
+
         print("\nGenerating answer...")
-        answer = get_grounded_answer(question, docs)
+        answer = get_grounded_answer(question, docs, conversation_history)
         print(f"\nAnswer:\n{answer}")
+
+        # ✅ Append this turn to history AFTER getting the answer
+        conversation_history.append({"role": "user", "content": question})
+        conversation_history.append({"role": "assistant", "content": answer})
+
+
 
 if __name__ == "__main__":
     try:
