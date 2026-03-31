@@ -5,7 +5,6 @@ from dotenv import load_dotenv
 from azure.search.documents import SearchClient
 from azure.core.credentials import AzureKeyCredential
 from openai import AzureOpenAI
-import yaml
 
 load_dotenv()
 
@@ -72,21 +71,24 @@ def build_retrieval_query(user_input, conversation_history):
 
     system_message = (
         "You are a search query builder for an IT support assistant.\n\n"
-        "Your job is to thoroughly read the conversation history and the latest user message, "
+        "Your job is to read the conversation history and the latest user message, "
         "then produce a single, concise search query that captures the FULL intent "
         "of the conversation — not just the latest message.\n\n"
         "Rules:\n"
-        "1. Combine relevant details from the chat history and the latest message.\n"
+        "1. Combine relevant details from the history and the latest message.\n"
         "2. Output ONLY the search query string. No explanation, no punctuation, "
            "no JSON, no markdown.\n"
-        "3. Keep it under 30 words.\n"
+        "3. Keep it under 20 words.\n"
         "4. Use keywords, not full sentences.\n\n"
-        "Examples:\n" # ✅ examples to guide the model towards keyword-based queries that combine history + latest input
+        "Examples:\n"
         "  History: 'VPN not working' / Assistant asked about OS / User said 'Windows'\n"
         "  Output : VPN not working Windows\n\n"
         "  History: 'Outlook keeps crashing' / Assistant asked about error / "
         "User said 'error 0x800CCC0E'\n"
         "  Output : Outlook crashing error 0x800CCC0E\n\n"
+        "  History: 'Printer offline' / Assistant asked which printer / "
+        "User said 'HP LaserJet on Mac'\n"
+        "  Output : HP LaserJet printer offline Mac"
     )
 
     messages = [
@@ -150,7 +152,7 @@ def is_query_vague(question, conversation_history):
         "- Any error messages or symptoms\n"
         "- What the user was doing when the issue occurred\n\n"
         "Examples of vague: 'VPN not working', 'Help me', 'Outlook issue'\n"
-        "Examples of specific: 'Outlook crashes on Windows 11 when opening attachments', 'VPN on MacOS with Certification Validation Error' "
+        "Examples of specific: 'Outlook crashes on Windows 11 when opening attachments', "
         "'VPN drops on Mac, error 619'\n\n"
         "If vague, respond ONLY with this JSON:\n"
         '{"vague": true, "clarifying_question": "Your single follow-up question here"}\n\n'
@@ -196,13 +198,13 @@ def build_system_prompt(context_docs):
     )
 
     return (
-        "You are a professional IT helpdesk support assistant for an enterprise environment.\n\n"
+        "You are a professional IT support assistant for an enterprise environment.\n\n"
 
         "RULES — follow these exactly, without exception:\n"
         "1. Answer using ONLY the retrieved documents provided below. "
-           "Do not use ANY outside knowledge.\n"
-        "2. If the answer cannot be found in the documents, respond with EXACTLY: "
-           "'I do not know based on the knowledge base. Would you like me to connect to IT Support?' Do not guess or infer.\n"
+           "Do not use any outside knowledge.\n"
+        "2. If the answer cannot be found in the documents, respond with exactly: "
+           "'I don't know based on the knowledge base.' Do not guess or infer.\n"
         "3. Always return your answer as step-by-step troubleshooting instructions "
            "using a numbered list. Each step must be a single, clear action.\n"
         "4. Be concise and professional. Avoid filler phrases, apologies, or preamble. "
@@ -216,7 +218,7 @@ def build_system_prompt(context_docs):
         f"{numbered_docs}\n\n"
 
         "Remember: base your answer solely on the documents above. "
-        "If the information is not there, say: 'I do not know based on my knowledge base. Would you like me to connect to IT Support?'"
+        "If the information is not there, say: 'I don't know based on the knowledge base.'"
     )
 
 
@@ -383,7 +385,6 @@ def main():
     print("  Memory ✓  Clarification ✓  Controller ✓  Multi-Turn ✓  Escalation ✓")
     print("═" * 62)
     print("Commands: 'exit' to quit · 'reset' to clear history\n")
-    print("\nHello I am an IT helpdesk support assistant. \n\nHow can I help you today?\n")
 
     conversation_history = []
 
@@ -416,3 +417,41 @@ if __name__ == "__main__":
         main()
     except KeyboardInterrupt:
         print("\nInterrupted. Exiting.")
+
+## DEFINE THE LLM FOR THE AGENT.
+from crewai import Agent, Crew, Process, Task, LLM
+llm_Call = LLM("gpt-4o", temperature=0.7,api_key=os.getenv("AZURE_OPENAI_API_KEY"), azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"), api_version="2024-02-15-preview")
+
+
+### AGENT CREATION
+
+agent_it_helper = Agent(
+    role='IT Helpdesk Assistant',
+    goal='Provide efficient and accurate IT support',
+    backstory='A seasoned IT professional known for resolving technical issues quickly and effectively.',
+    llm=llm_Call, # Assign the Azure LLM instance
+    verbose=True
+)
+
+
+
+# Define their tasks
+ticket_creation_task = Task(
+    description="Create a new IT support ticket based on the discussion so far",
+    expected_output="A new IT support ticket with all relevant details from the conversation",
+    agent=agent_it_helper
+)
+
+
+
+
+# Create the crew
+market_analysis_crew = Crew(
+    agents=[agent_it_helper],
+    tasks=[ticket_creation_task],
+    process=Process.sequential,
+    verbose=True
+)
+
+# # Run the crew
+# result = market_analysis_crew.kickoff()
