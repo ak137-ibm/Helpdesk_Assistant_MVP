@@ -16,8 +16,6 @@ from openai import AzureOpenAI
 from agent_framework import tool
 from agent_framework.openai import OpenAIChatCompletionClient
 
-from tool_data import Tools
-
 load_dotenv()
 
 SEARCH_ENDPOINT = os.getenv("AZURE_SEARCH_ENDPOINT")
@@ -59,16 +57,39 @@ TOOL_REQUEST_SIGNALS = [
     "check device",
     "device status",
     "create ticket",
+    "create a ticket",
     "open ticket",
+    "open a ticket",
     "raise ticket",
+    "raise a ticket",
+    "escalate",
 ]
 
 TICKET_REQUEST_SIGNALS = [
     "create ticket",
+    "create a ticket",
     "open ticket",
+    "open a ticket",
     "raise ticket",
+    "raise a ticket",
     "escalate this",
     "escalate issue",
+    "escalate",
+]
+
+TICKET_CONFIRMATION_SIGNALS = [
+    "yes",
+    "yes please",
+    "please do",
+    "go ahead",
+    "do it",
+    "proceed",
+    "create one",
+    "open one",
+    "raise one",
+    "sure",
+    "okay",
+    "ok",
 ]
 
 MAF_AGENT_INSTRUCTIONS = (
@@ -76,8 +97,8 @@ MAF_AGENT_INSTRUCTIONS = (
     "Rules:\n"
     "1. Use lookup_user only for user identity lookups.\n"
     "2. Use check_device_status only for device state checks.\n"
-    "3. Use create_ticket only when the user explicitly asks to open/create/escalate a ticket.\n"
-    "4. If ticket fields are missing, ask for only the missing fields.\n"
+    "3. Use create_ticket when directed. All required fields will be provided — call the tool immediately with the given values.\n"
+    "4. Do NOT ask for more information when ticket fields are already supplied in the prompt.\n"
     "5. After ticket creation, reply with ticket_id, severity, status, and assignment_group.\n"
     "6. Keep the final answer concise and professional."
 )
@@ -109,6 +130,41 @@ openai_client = AzureOpenAI(
     azure_endpoint=OPENAI_ENDPOINT
 )
 
+# ============================================================
+# MOCK TOOL DATA
+# ============================================================
+MOCK_USERS = {
+    "jdoe": {
+        "username": "jdoe",
+        "name": "John Doe",
+        "department": "Finance",
+        "email": "jdoe@company.com",
+        "device_id": "LAPTOP-1001",
+    },
+    "asmith": {
+        "username": "asmith",
+        "name": "Alice Smith",
+        "department": "HR",
+        "email": "asmith@company.com",
+        "device_id": "LAPTOP-1002",
+    },
+}
+
+MOCK_DEVICES = {
+    "LAPTOP-1001": {
+        "device_id": "LAPTOP-1001",
+        "status": "online",
+        "vpn_client": "installed",
+        "last_seen": "2026-03-31 08:15",
+    },
+    "LAPTOP-1002": {
+        "device_id": "LAPTOP-1002",
+        "status": "offline",
+        "vpn_client": "unknown",
+        "last_seen": "2026-03-30 19:42",
+    },
+}
+
 
 def _write_ticket(ticket_record):
     with TICKETS_FILE.open("a", encoding="utf-8") as fp:
@@ -124,7 +180,7 @@ def _write_ticket(ticket_record):
 def lookup_user(
     username: Annotated[str, Field(description="Employee username, for example jdoe")]
 ) -> str:
-    user = Tools.MOCK_USERS.get(username.lower())
+    user = MOCK_USERS.get(username.lower())
     if not user:
         return f"No user found for username '{username}'."
 
@@ -145,7 +201,7 @@ def lookup_user(
 def check_device_status(
     device_id: Annotated[str, Field(description="Device ID, for example LAPTOP-1001")]
 ) -> str:
-    device = Tools.MOCK_DEVICES.get(device_id.upper())
+    device = MOCK_DEVICES.get(device_id.upper())
     if not device:
         return f"No device found for device ID '{device_id}'."
 
@@ -439,17 +495,114 @@ def looks_like_ticket_request(user_input):
     return any(signal in msg for signal in TICKET_REQUEST_SIGNALS)
 
 
-async def run_tool_agent(user_input):
-    response = await tool_agent.run(user_input)
+def looks_like_ticket_confirmation(user_input):
+    msg = user_input.strip().lower()
+    return any(msg == signal or msg.startswith(signal) for signal in TICKET_CONFIRMATION_SIGNALS)
+
+
+def last_assistant_offered_escalation(conversation_history):
+    """Return True if the most recent assistant message contained the escalation suffix."""
+    for message in reversed(conversation_history):
+        if message.get("role") == "assistant":
+            return ESCALATION_SUFFIX in message.get("content", "")
+    return False
+
+
+def extract_ticket_context(conversation_history):
+    """
+    Reads the full conversation and uses the LLM to extract structured ticket fields.
+    Returns a dict with: issue, category, severity, impacted_system, user.
+    """
+    history_text = "\n".join(
+        f"{m['role'].upper()}: {m['content']}"
+        for m in conversation_history[-HISTORY_LIMIT:]
+    )
+
+    system_message = (
+        "You are an IT ticket field extractor.\n\n"
+        "Read the conversation below and extract the following fields for an IT support ticket.\n"
+        "Be specific — use exact details mentioned in the conversation, not generic placeholders.\n\n"
+        "Fields to extract:\n"
+        "- issue: a one-sentence description of the IT problem (required)\n"
+        "- category: one of VPN, Email, MFA, Device, Account, Hardware, Software, General\n"
+        "- severity: one of Low, Medium, High, Critical — infer from impact described\n"
+        "- impacted_system: the specific app, tool, or system affected\n"
+        "- user: username or email if mentioned, otherwise 'unknown'\n\n"
+        "Respond ONLY with valid JSON, no markdown, no explanation:\n"
+        '{"issue": "...", "category": "...", "severity": "...", "impacted_system": "...", "user": "..."}'
+    )
+
+    try:
+        response = openai_client.chat.completions.create(
+            model=OPENAI_DEPLOYMENT,
+            messages=[
+                {"role": "system", "content": system_message},
+                {"role": "user", "content": history_text},
+            ],
+            temperature=0,
+            max_tokens=200,
+        )
+        raw = response.choices[0].message.content.strip()
+        print(f"[DEBUG] Extracted ticket context: {raw}")
+        parsed = json.loads(raw)
+        return {
+            "issue": parsed.get("issue", "Unresolved IT issue"),
+            "category": parsed.get("category", "General"),
+            "severity": parsed.get("severity", "Medium"),
+            "impacted_system": parsed.get("impacted_system", "Unknown"),
+            "user": parsed.get("user", "unknown"),
+        }
+    except Exception as e:
+        print(f"[DEBUG] Ticket context extraction failed: {e} — using defaults")
+        return {
+            "issue": "Unresolved IT issue from conversation",
+            "category": "General",
+            "severity": "Medium",
+            "impacted_system": "Unknown",
+            "user": "unknown",
+        }
+
+
+async def run_tool_agent(prompt):
+    response = await tool_agent.run(prompt)
     return response.text
 
 # ════════════════════════════════════════════════════
 # LAYER 6 — AGENT CONTROLLER
 # ════════════════════════════════════════════════════
 
+def build_ticket_prompt(ctx):
+    """Build an explicit tool-call prompt from extracted ticket context."""
+    return (
+        f"Create an IT support ticket with the following details:\n"
+        f"- user: {ctx['user']}\n"
+        f"- issue: {ctx['issue']}\n"
+        f"- category: {ctx['category']}\n"
+        f"- severity: {ctx['severity']}\n"
+        f"- impacted_system: {ctx['impacted_system']}\n"
+        "Call create_ticket now with these exact values."
+    )
+
+
 async def handle_user_message(user_input, conversation_history):
     print("\n[Agent Controller] Evaluating message...")
 
+    # Detect explicit ticket request or confirmation of a prior escalation offer
+    is_ticket_request = looks_like_ticket_request(user_input)
+    is_confirmation = (
+        looks_like_ticket_confirmation(user_input)
+        and last_assistant_offered_escalation(conversation_history)
+    )
+
+    if is_ticket_request or is_confirmation:
+        print("[Agent Controller] Decision → MAF TICKET CREATION (context-aware)")
+        ctx = extract_ticket_context(conversation_history)
+        tool_prompt = build_ticket_prompt(ctx)
+        print(f"[DEBUG] Ticket prompt sent to agent: {tool_prompt}")
+        tool_response = await run_tool_agent(tool_prompt)
+        return tool_response, True
+
+    # Route other tool requests (lookup, device check)
     if looks_like_tool_request(user_input):
         print("[Agent Controller] Decision → MAF TOOL CALL")
         tool_response = await run_tool_agent(user_input)
@@ -468,16 +621,17 @@ async def handle_user_message(user_input, conversation_history):
     docs = get_search_results(enriched_query, top_k=5)
 
     if not docs:
-        return "I don't know based on the knowledge base." + ESCALATION_SUFFIX, True
+        return (
+            "I don't know based on the knowledge base."
+            + ESCALATION_SUFFIX
+            + "\n\nWould you like me to create a support ticket for this issue?"
+        ), True
 
     answer = get_grounded_answer(user_input, docs, conversation_history)
     final_answer = check_escalation(answer)
 
-    if ESCALATION_SUFFIX in final_answer and not looks_like_ticket_request(user_input):
-        final_answer += (
-            "\n\nIf you want escalation, ask: "
-            "'create ticket for user <username> issue <short issue summary>'."
-        )
+    if ESCALATION_SUFFIX in final_answer:
+        final_answer += "\n\nWould you like me to create a support ticket for this issue?"
 
     return final_answer, True
 
