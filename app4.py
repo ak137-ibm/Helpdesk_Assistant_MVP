@@ -255,21 +255,21 @@ def build_retrieval_query(user_input, conversation_history):
 
     system_message = (
         "You are a search query builder for an IT support assistant.\n\n"
-        "Your job is to read the conversation history and the latest user message, "
+        "Your job is to thoroughly read the conversation history and the latest user message, "
         "then produce a single, concise search query that captures the FULL intent "
         "of the conversation — not just the latest message.\n\n"
         "Rules:\n"
-        "1. Combine relevant details from the history and the latest message.\n"
-        "2. Output ONLY the search query string. No explanation, no punctuation, no JSON, no markdown.\n"
-        "3. Keep it under 20 words.\n"
+        "1. Combine relevant details from the chat history and the latest message.\n"
+        "2. Output ONLY the search query string. No explanation, no punctuation, "
+           "no JSON, no markdown.\n"
+        "3. Keep it under 30 words.\n"
         "4. Use keywords, not full sentences.\n\n"
-        "Examples:\n"
-        "History: 'VPN not working' / Assistant asked about OS / User said 'Windows'\n"
-        "Output: VPN not working Windows\n\n"
-        "History: 'Outlook keeps crashing' / Assistant asked about error / User said 'error 0x800CCC0E'\n"
-        "Output: Outlook crashing error 0x800CCC0E\n\n"
-        "History: 'Printer offline' / Assistant asked which printer / User said 'HP LaserJet on Mac'\n"
-        "Output: HP LaserJet printer offline Mac"
+        "Examples:\n" # ✅ examples to guide the model towards keyword-based queries that combine history + latest input
+        "  History: 'VPN not working' / Assistant asked about OS / User said 'Windows'\n"
+        "  Output : VPN not working Windows\n\n"
+        "  History: 'Outlook keeps crashing' / Assistant asked about error / "
+        "User said 'error 0x800CCC0E'\n"
+        "  Output : Outlook crashing error 0x800CCC0E\n\n"
     )
 
     messages = [
@@ -326,7 +326,7 @@ def is_query_vague(question, conversation_history):
         "- Any error messages or symptoms\n"
         "- What the user was doing when the issue occurred\n\n"
         "Examples of vague: 'VPN not working', 'Help me', 'Outlook issue'\n"
-        "Examples of specific: 'Outlook crashes on Windows 11 when opening attachments', "
+        "Examples of specific: 'Outlook crashes on Windows 11 when opening attachments', 'VPN on MacOS with Certification Validation Error' "
         "'VPN drops on Mac, error 619'\n\n"
         "If vague, respond ONLY with this JSON:\n"
         '{"vague": true, "clarifying_question": "Your single follow-up question here"}\n\n'
@@ -367,19 +367,25 @@ def build_system_prompt(context_docs):
     )
 
     return (
-        "You are a professional IT support assistant for an enterprise environment.\n\n"
+        "You are a professional IT helpdesk support assistant for an enterprise environment.\n\n"
+
         "RULES — follow these exactly, without exception:\n"
-        "1. Answer using ONLY the retrieved documents provided below. Do not use any outside knowledge.\n"
-        "2. If the answer cannot be found in the documents, respond with exactly: "
-        "'I don't know based on the knowledge base.' Do not guess or infer.\n"
-        "3. Always return your answer as step-by-step troubleshooting instructions using a numbered list.\n"
-        "4. Be concise and professional. Avoid filler phrases.\n"
-        "5. If the conversation history shows a previous clarification exchange, factor that context into your answer.\n"
-        "6. If you are uncertain about any step or the answer is only partially covered by the documents, clearly state your uncertainty.\n\n"
+        "1. Answer using ONLY the retrieved documents provided below. "
+           "Do not use ANY outside knowledge.\n"
+        "2. If the answer cannot be found in the documents, respond with EXACTLY: "
+           "'I do not know based on the knowledge base. Would you like me to connect to IT Support?' Do not guess or infer.\n"
+        "3. Always return your answer as step-by-step troubleshooting instructions "
+           "using a numbered list. Each step must be a single, clear action.\n"
+        "4. Be concise and professional. Avoid filler phrases, apologies, or preamble. "
+           "Get straight to the steps.\n"
+        "5. If the conversation history shows a previous clarification exchange, "
+           "factor that context into your answer.\n"
+        "6. If you are uncertain about any step or the answer is only partially covered "
+           "by the documents, clearly state your uncertainty in the response.\n\n"
         "RETRIEVED DOCUMENTS:\n"
         f"{numbered_docs}\n\n"
         "Remember: base your answer solely on the documents above. "
-        "If the information is not there, say: 'I don't know based on the knowledge base.'"
+        "If the information is not there, say: 'I do not know based on my knowledge base. Would you like me to connect to IT Support?'"
     )
 
 
@@ -420,8 +426,13 @@ def check_escalation(answer):
         "You are an escalation detector for an IT support assistant.\n\n"
         "Read the assistant's answer below and decide if it expresses "
         "any uncertainty, partial knowledge, or lack of confidence.\n\n"
+        "Signals of uncertainty include:\n"
+        "- Hedging language (may, might, could, possibly, perhaps)\n"
+        "- Partial answers or gaps ('this might help but...')\n"
+        "- Suggestions to try something without confidence it will work\n"
+        "- Any implication the answer is incomplete\n\n"
         "Respond ONLY with JSON:\n"
-        '{"uncertain": true} or {"uncertain": false}\n\n'
+        '{"uncertain": true}  or  {"uncertain": false}\n\n'
         "No explanation. No markdown. JSON only."
     )
 
@@ -513,6 +524,7 @@ async def main():
     print("  Memory ✓  Clarification ✓  Controller ✓  Multi-Turn ✓  Escalation ✓  MAF Tools ✓")
     print("═" * 76)
     print("Commands: 'exit' to quit · 'reset' to clear history\n")
+    print("\nHello I am an IT helpdesk support assistant. \n\nHow can I help you today?\n")
 
     conversation_history = []
 
