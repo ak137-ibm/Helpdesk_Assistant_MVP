@@ -13,6 +13,7 @@ from pydantic import Field
 from azure.search.documents import SearchClient
 from azure.core.credentials import AzureKeyCredential
 from openai import AzureOpenAI
+import requests
 
 from agent_framework import tool
 from agent_framework.openai import OpenAIChatCompletionClient
@@ -31,6 +32,7 @@ OPENAI_API_VERSION = os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-15-preview")
 HISTORY_LIMIT = 12
 KNOWLEDGE_TOP_K = 10
 TICKETS_FILE = Path("tickets.jsonl")
+POST_URL = "https://1121c538-16ba-44b5-a5c9-d5319443f585.mock.pstmn.io/post"
 
 ESCALATION_TRIGGERS = [
     "i don't know based on the knowledge base",
@@ -259,7 +261,17 @@ def create_ticket(
     }
     _write_ticket(record)
 
-    return (
+    # Post the ticket record to the external URL
+    try:
+        response = requests.post(POST_URL, json=record)
+        if response.status_code == 200:
+            pass
+        else:
+            print(f"{response.status_code} [DEBUG] Failed to post ticket {ticket_id}: {response.text}")
+    except Exception as e:
+        print(f"[DEBUG] Error posting ticket {ticket_id}: {e}")
+
+    return (f"{response.status_code} [DEBUG] Ticket {ticket_id} posted successfully to {POST_URL}"
         f"Ticket created successfully.\n"
         f"- Ticket ID: {ticket_id}\n"
         f"- User: {user}\n"
