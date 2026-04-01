@@ -3,11 +3,11 @@ import sys
 import json
 import asyncio
 import uuid
+import re
 from typing import Annotated
 from datetime import datetime, timezone
 from pathlib import Path
 
-import requests
 from dotenv import load_dotenv
 from pydantic import Field
 from azure.search.documents import SearchClient
@@ -29,6 +29,7 @@ OPENAI_DEPLOYMENT = os.getenv("AZURE_OPENAI_DEPLOYMENT")
 OPENAI_API_VERSION = os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-15-preview")
 
 HISTORY_LIMIT = 12
+KNOWLEDGE_TOP_K = 10
 TICKETS_FILE = Path("tickets.jsonl")
 
 ESCALATION_TRIGGERS = [
@@ -51,8 +52,6 @@ ESCALATION_TRIGGERS = [
 ]
 
 ESCALATION_SUFFIX = "\n\n⚠️ Please contact IT support if the issue persists."
-
-POST_URL = "https://1121c538-16ba-44b5-a5c9-d5319443f585.mock.pstmn.io/post"
 
 TOOL_REQUEST_SIGNALS = [
     "lookup user",
@@ -95,7 +94,59 @@ TICKET_CONFIRMATION_SIGNALS = [
     "ok",
 ]
 
-MAF_AGENT_INSTRUCTIONS = (
+FOLLOWUP_FAILURE_SIGNALS = [
+    "still not working",
+    "did not work",
+    "didn't work",
+    "no luck",
+    "same issue",
+    "still failing",
+    "still locked out",
+    "not resolved",
+    "doesn't work",
+    "cannot connect",
+]
+
+MAF_TRIAGE_INSTRUCTIONS = (
+    "You are an IT Helpdesk triage agent.\n\n"
+    "Your job is to read the user's request and conversation history, classify the issue, "
+    "detect urgency, and decide which downstream agent should handle it.\n\n"
+    "Respond ONLY with valid JSON (no markdown, no explanation):\n"
+    '{"route_to": "knowledge|action|clarify", "urgency": "low|medium|high|critical", '
+    '"category": "VPN|Email|MFA|Device|Account|Software|Hardware|General", '
+    '"clarifying_question": null, "summary": "one-sentence issue description"}\n\n'
+    "Routing rules:\n"
+    '"knowledge" → user needs troubleshooting steps or information '
+    "(VPN error, email crash, MFA setup, password reset, etc.).\n"
+    '"action"    → user wants an operational task: look up a user, check a device, '
+    "create a ticket, or explicitly asks to escalate.\n"
+    "For account lockout/password issues, prefer knowledge unless the user explicitly asks to create/open/raise a ticket.\n"
+    '"clarify"   → query is too vague to route; set clarifying_question '
+    "to a single targeted follow-up question.\n\n"
+    "Urgency rules:\n"
+    "- critical : full business outage or security incident, all users affected\n"
+    "- high     : single user fully blocked, cannot perform their job\n"
+    "- medium   : partial degradation, a workaround exists\n"
+    "- low      : general how-to question, no active blocking issue\n\n"
+    "A query is vague when it lacks the application, OS, error message, or symptoms.\n"
+    "Vague examples : 'VPN not working', 'Help me', 'Outlook issue'\n"
+    "Specific examples : 'Outlook crashes on Windows 11 when opening attachments', "
+    "'VPN on Mac returns error 619'"
+)
+
+MAF_KNOWLEDGE_INSTRUCTIONS = (
+    "You are an IT Helpdesk knowledge agent.\n\n"
+    "The retrieved knowledge base documents are provided directly in the user message under RETRIEVED DOCUMENTS.\n\n"
+    "Rules:\n"
+    "1. Answer using ONLY the documents provided in the prompt. Do not use outside knowledge.\n"
+    "2. If no relevant information is present in the documents, respond with exactly: "
+       "'I do not know based on the knowledge base. Would you like me to connect to IT Support?'\n"
+    "3. Format answers as numbered step-by-step troubleshooting instructions.\n"
+    "4. Be concise and professional. No apologies or filler phrases.\n"
+    "5. If the answer is partial or uncertain, clearly state that in your response."
+)
+
+MAF_ACTION_INSTRUCTIONS = (
     "You are an IT Helpdesk action agent.\n\n"
     "Rules:\n"
     "1. Use lookup_user only for user identity lookups.\n"
@@ -208,17 +259,8 @@ def create_ticket(
     }
     _write_ticket(record)
 
-    # Post the ticket record to the external URL
-    try:
-        response = requests.post(POST_URL, json=record)
-        if response.status_code == 200:
-            print(f"{response.status_code} [DEBUG] Ticket {ticket_id} posted successfully to {POST_URL}")
-        else:
-            print(f"{response.status_code} [DEBUG] Failed to post ticket {ticket_id}: {response.text}")
-    except Exception as e:
-        print(f"[DEBUG] Error posting ticket {ticket_id}: {e}")
-
     return (
+        f"Ticket created successfully.\n"
         f"- Ticket ID: {ticket_id}\n"
         f"- User: {user}\n"
         f"- Issue: {issue}\n"
@@ -229,20 +271,69 @@ def create_ticket(
         f"- Assignment Group: IT Service Desk"
     )
 
-# ============================================================
-# MAF AGENT
-# ============================================================
-REGISTERED_MAF_TOOLS = [lookup_user, check_device_status, create_ticket]
 
-tool_agent = OpenAIChatCompletionClient(
+@tool(
+    name="search_knowledge_base",
+    description=(
+        "Search the IT knowledge base for troubleshooting steps and known solutions. "
+        "Use a concise keyword query such as 'VPN error 619 Mac' or 'Outlook crash Windows 11'."
+    )
+)
+def search_knowledge_base(
+    query: Annotated[str, Field(description="Concise keyword search query describing the IT issue")]
+) -> str:
+    try:
+        results = search_client.search(query, top=5)
+        docs = []
+        for doc in results:
+            for field in ["content", "text", "chunk", "chunk_text"]:
+                if field in doc and doc[field]:
+                    docs.append(doc[field])
+                    break
+            else:
+                docs.append(str(doc))
+        if not docs:
+            return "No relevant documents found in the knowledge base."
+        return "\n\n---\n\n".join(docs)
+    except Exception as e:
+        return f"Knowledge base search failed: {e}"
+
+
+# ============================================================
+# MAF AGENTS
+# ============================================================
+
+triage_agent = OpenAIChatCompletionClient(
     model=OPENAI_DEPLOYMENT,
     azure_endpoint=OPENAI_ENDPOINT,
     api_version=OPENAI_API_VERSION,
     api_key=OPENAI_KEY,
 ).as_agent(
-    name="ITHelpdeskToolAgent",
-    instructions=MAF_AGENT_INSTRUCTIONS,
-    tools=REGISTERED_MAF_TOOLS,
+    name="TriageAgent",
+    instructions=MAF_TRIAGE_INSTRUCTIONS,
+    tools=[],
+)
+
+knowledge_agent = OpenAIChatCompletionClient(
+    model=OPENAI_DEPLOYMENT,
+    azure_endpoint=OPENAI_ENDPOINT,
+    api_version=OPENAI_API_VERSION,
+    api_key=OPENAI_KEY,
+).as_agent(
+    name="KnowledgeAgent",
+    instructions=MAF_KNOWLEDGE_INSTRUCTIONS,
+    tools=[],
+)
+
+action_agent = OpenAIChatCompletionClient(
+    model=OPENAI_DEPLOYMENT,
+    azure_endpoint=OPENAI_ENDPOINT,
+    api_version=OPENAI_API_VERSION,
+    api_key=OPENAI_KEY,
+).as_agent(
+    name="ActionAgent",
+    instructions=MAF_ACTION_INSTRUCTIONS,
+    tools=[lookup_user, check_device_status, create_ticket],
 )
 
 # ════════════════════════════════════════════════════
@@ -312,6 +403,21 @@ def get_search_results(query, top_k=5):
     except Exception as e:
         print(f"Error querying Azure Search: {e}")
         return []
+
+
+def extract_error_code(text):
+    """Extract a numeric or hex-style error code from user text when present."""
+    match = re.search(r"\b(?:error(?:\s+code)?\s*)?(0x[0-9A-Fa-f]+|\d{3,6})\b", text, flags=re.IGNORECASE)
+    if match:
+        return match.group(1).lower()
+    return None
+
+
+def docs_contain_error_code(docs, error_code):
+    """Return True only when at least one retrieved document contains the exact error code."""
+    if not error_code:
+        return False
+    return any(error_code in doc.lower() for doc in docs)
 
 # ════════════════════════════════════════════════════
 # LAYER 3 — TRIAGE (Clarification Check)
@@ -486,6 +592,36 @@ def last_assistant_offered_escalation(conversation_history):
     return False
 
 
+def should_run_escalation_check(response_text):
+    """
+    Run escalation logic only for explicit unknown-answer outcomes.
+    This avoids escalating good KB-backed instructions.
+    """
+    response_lower = response_text.lower()
+    return "i do not know based on the knowledge base" in response_lower
+
+
+def user_reports_failed_steps(user_input, conversation_history):
+    """
+    Detect follow-up messages indicating that prior troubleshooting steps failed.
+    """
+    msg = user_input.lower()
+    mentions_failure = any(signal in msg for signal in FOLLOWUP_FAILURE_SIGNALS)
+    if not mentions_failure:
+        return False
+
+    for message in reversed(conversation_history):
+        if message.get("role") != "assistant":
+            continue
+        content = message.get("content", "")
+        # Require prior step-based guidance and no existing escalation in that message.
+        had_steps = "1." in content and "2." in content
+        had_escalation = ESCALATION_SUFFIX in content
+        return had_steps and not had_escalation
+
+    return False
+
+
 def extract_ticket_context(conversation_history):
     """
     Reads the full conversation and uses the LLM to extract structured ticket fields.
@@ -541,9 +677,110 @@ def extract_ticket_context(conversation_history):
         }
 
 
-async def run_tool_agent(prompt):
-    response = await tool_agent.run(prompt)
-    return response.text
+async def run_orchestrator(user_input: str, conversation_history: list) -> str:
+    """
+    MAF Orchestrator — receives every user request and routes it to the right agent:
+      · TriageAgent    → classifies intent, urgency, and routing decision
+      · KnowledgeAgent → searches the knowledge base and returns step-by-step answers
+      · ActionAgent    → executes operational tasks (lookups, device checks, tickets)
+    """
+    print("\n[Orchestrator] Starting triage...")
+
+    history_context = "\n".join(
+        f"{m['role'].upper()}: {m['content']}"
+        for m in conversation_history[-HISTORY_LIMIT:]
+    )
+    triage_prompt = (
+        f"Conversation so far:\n{history_context}\n\nLatest message: {user_input}"
+        if history_context else user_input
+    )
+
+    # ── Step 1: Triage ──────────────────────────────────────────
+    try:
+        triage_response = await triage_agent.run(triage_prompt)
+        triage_raw = triage_response.text.strip()
+        print(f"[Orchestrator] Triage: {triage_raw}")
+        triage_data = json.loads(triage_raw)
+    except Exception as e:
+        print(f"[Orchestrator] Triage failed: {e} — defaulting to knowledge route")
+        triage_data = {"route_to": "knowledge", "urgency": "medium", "category": "General"}
+
+    route_to = triage_data.get("route_to", "knowledge")
+    urgency  = triage_data.get("urgency", "medium")
+    category = triage_data.get("category", "General")
+
+    # Safety gate: only allow direct action routing when user intent is explicitly operational.
+    explicit_action_intent = looks_like_tool_request(user_input) or looks_like_ticket_request(user_input)
+    if route_to == "action" and not explicit_action_intent:
+        print("[Orchestrator] Action route overridden to KNOWLEDGE (no explicit action intent)")
+        route_to = "knowledge"
+
+    print(f"[Orchestrator] Route → {route_to.upper()} | Urgency: {urgency} | Category: {category}")
+
+    # ── Step 2: Clarification ────────────────────────────────────
+    if route_to == "clarify":
+        return triage_data.get(
+            "clarifying_question",
+            "Could you provide more details about the issue?"
+        )
+
+    # ── Step 3a: Knowledge Agent ─────────────────────────────────
+    if route_to == "knowledge":
+        print("[Orchestrator] Dispatching → KnowledgeAgent")
+
+        # Deterministic retrieval: enrich query with history, then fetch docs from Azure Search
+        enriched_query = build_retrieval_query(user_input, conversation_history)
+        docs = get_search_results(enriched_query, top_k=KNOWLEDGE_TOP_K)
+
+        # Error-code-aware fallback: force retrieval anchored on the specific error code
+        # if the first pass did not return matching chunks.
+        error_code = extract_error_code(user_input)
+        if error_code and docs and not docs_contain_error_code(docs, error_code):
+            fallback_query = f"error code {error_code} {user_input}"
+            print(f"[Orchestrator] Retrying retrieval with error-code fallback query: '{fallback_query}'")
+            fallback_docs = get_search_results(fallback_query, top_k=KNOWLEDGE_TOP_K)
+            if fallback_docs:
+                docs = fallback_docs
+
+        if error_code and not docs_contain_error_code(docs, error_code):
+            print(f"[Orchestrator] Error code {error_code} not found in retrieved docs — treating as KB miss")
+            return (
+                "I do not know based on the knowledge base. "
+                "Would you like me to connect to IT Support?"
+            )
+
+        if not docs:
+            print("[Orchestrator] No docs found — skipping KnowledgeAgent")
+            return (
+                "I do not know based on the knowledge base. "
+                "Would you like me to connect to IT Support?"
+            )
+
+        numbered_docs = "\n\n".join(
+            f"[Document {i}]\n{doc.strip()}" for i, doc in enumerate(docs, 1)
+        )
+        knowledge_prompt = (
+            f"{f'Conversation history:{chr(10)}{history_context}{chr(10)}{chr(10)}' if history_context else ''}"
+            f"User question: {user_input}\n\n"
+            f"RETRIEVED DOCUMENTS:\n{numbered_docs}"
+        )
+        print(f"[Orchestrator] Passing {len(docs)} doc(s) to KnowledgeAgent")
+        try:
+            knowledge_response = await knowledge_agent.run(knowledge_prompt)
+            return knowledge_response.text.strip()
+        except Exception as e:
+            return f"Knowledge base lookup failed: {e}"
+
+    # ── Step 3b: Action Agent ─────────────────────────────────────
+    if route_to == "action":
+        print("[Orchestrator] Dispatching → ActionAgent")
+        try:
+            action_response = await action_agent.run(user_input)
+            return action_response.text.strip()
+        except Exception as e:
+            return f"Action execution failed: {e}"
+
+    return "I was unable to process your request. Please try again."
 
 # ════════════════════════════════════════════════════
 # LAYER 6 — AGENT CONTROLLER
@@ -565,53 +802,39 @@ def build_ticket_prompt(ctx):
 async def handle_user_message(user_input, conversation_history):
     print("\n[Agent Controller] Evaluating message...")
 
-    # Detect explicit ticket request or confirmation of a prior escalation offer
-    is_ticket_request = looks_like_ticket_request(user_input)
+    # Pre-check: ticket confirmation following a prior escalation offer
     is_confirmation = (
         looks_like_ticket_confirmation(user_input)
         and last_assistant_offered_escalation(conversation_history)
     )
-
-    if is_ticket_request or is_confirmation:
-        print("[Agent Controller] Decision → MAF TICKET CREATION (context-aware)")
+    if is_confirmation:
+        print("[Agent Controller] Decision → TICKET CONFIRMATION → ActionAgent")
         ctx = extract_ticket_context(conversation_history)
         tool_prompt = build_ticket_prompt(ctx)
         print(f"[DEBUG] Ticket prompt sent to agent: {tool_prompt}")
-        tool_response = await run_tool_agent(tool_prompt)
-        return tool_response, True
+        action_response = await action_agent.run(tool_prompt)
+        return action_response.text, True
 
-    # Route other tool requests (lookup, device check)
-    if looks_like_tool_request(user_input):
-        print("[Agent Controller] Decision → MAF TOOL CALL")
-        tool_response = await run_tool_agent(user_input)
-        final_tool_response = check_escalation(tool_response)
-        return final_tool_response, True
-
-    is_vague, clarifying_question = is_query_vague(user_input, conversation_history)
-
-    if is_vague and clarifying_question:
-        print("[Agent Controller] Decision → CLARIFY")
-        return clarifying_question, True
-
-    print("[Agent Controller] Decision → RETRIEVE + ANSWER")
-
-    enriched_query = build_retrieval_query(user_input, conversation_history)
-    docs = get_search_results(enriched_query, top_k=5)
-
-    if not docs:
+    # If user says previously provided steps failed, proactively offer escalation.
+    if user_reports_failed_steps(user_input, conversation_history):
+        print("[Agent Controller] Decision → FOLLOW-UP FAILURE → OFFER ESCALATION")
         return (
-            "I don't know based on the knowledge base."
+            "Thanks for trying those steps."
             + ESCALATION_SUFFIX
             + "\n\nWould you like me to create a support ticket for this issue?"
         ), True
 
-    answer = get_grounded_answer(user_input, docs, conversation_history)
-    final_answer = check_escalation(answer)
+    # Delegate all routing decisions to the MAF Orchestrator
+    response = await run_orchestrator(user_input, conversation_history)
+    if should_run_escalation_check(response):
+        final_response = check_escalation(response)
+    else:
+        final_response = response
 
-    if ESCALATION_SUFFIX in final_answer:
-        final_answer += "\n\nWould you like me to create a support ticket for this issue?"
+    if ESCALATION_SUFFIX in final_response:
+        final_response += "\n\nWould you like me to create a support ticket for this issue?"
 
-    return final_answer, True
+    return final_response, True
 
 # ════════════════════════════════════════════════════
 # MAIN LOOP
@@ -620,7 +843,8 @@ async def handle_user_message(user_input, conversation_history):
 async def main():
     print("═" * 76)
     print("  Azure RAG IT Support Agent + Microsoft Agent Framework")
-    print("  Memory ✓  Clarification ✓  Controller ✓  Multi-Turn ✓  Escalation ✓  MAF Tools ✓")
+    print("  Memory ✓  Clarification ✓  Multi-Turn ✓  Escalation ✓  Orchestrator ✓")
+    print("  Agents: TriageAgent · KnowledgeAgent · ActionAgent")
     print("═" * 76)
     print("Commands: 'exit' to quit · 'reset' to clear history\n")
     print("\nHello I am an IT helpdesk support assistant. \n\nHow can I help you today?\n")
