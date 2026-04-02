@@ -6,3 +6,4 @@ pyyaml
 requests
 streamlit
 agent_framework
+fastmcp

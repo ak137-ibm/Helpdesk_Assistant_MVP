@@ -1,3 +1,6 @@
 # Ignore all .env files in the root directory
 .env
 .venv
+.DS_Store
+__pycache__/
+*.py[cod]
