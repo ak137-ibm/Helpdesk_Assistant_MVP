@@ -3,11 +3,12 @@ import asyncio
 from datetime import datetime
 import sys
 import os
+from streamlit.errors import StreamlitAPIException
 
 # Add the current directory to the path so we can import from this project
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-# Import the main logic from the MCP-enabled app5 module
+# Import the main logic from the MCP-enabled module
 from appFinal import handle_user_message
 
 # Set page configuration
@@ -166,6 +167,9 @@ def initialize_session_state():
         st.session_state.conversation_history = []
     if 'messages' not in st.session_state:
         st.session_state.messages = []
+    # add statement so that the user input is cleared after 
+    if 'last_input' not in st.session_state:
+        st.session_state.last_input = ""
 
 
 def add_message(role, content):
@@ -176,6 +180,12 @@ def add_message(role, content):
         'content': content,
         'timestamp': timestamp
     })
+
+
+def handle_ui_error(error, user_message="Sorry, I encountered an error while updating the interface."):
+    """Display UI-related failures in the chat and in the Streamlit error area."""
+    add_message('assistant', f"{user_message} Details: {error}")
+    st.error(f"{user_message} Details: {error}")
 
 def display_chat_history():
     """Display the chat history"""
@@ -243,6 +253,23 @@ async def process_user_input(user_input):
             error_msg = f"Sorry, I encountered an error: {str(e)}"
             add_message('assistant', error_msg)
 
+
+def submit_user_input(user_input):
+    """Run one submission cycle and reset input state safely."""
+    try:
+        asyncio.run(process_user_input(user_input))
+        st.session_state.user_input = ""
+        st.session_state.last_input = ""
+        st.rerun()
+    except StreamlitAPIException as error:
+        st.session_state.user_input = user_input
+        st.session_state.last_input = user_input
+        handle_ui_error(error, "The chat input could not be submitted.")
+    except Exception as error:
+        st.session_state.user_input = user_input
+        st.session_state.last_input = user_input
+        handle_ui_error(error, "The request could not be processed.")
+
 def main():
     initialize_session_state()
 
@@ -265,9 +292,14 @@ def main():
         # st.markdown("- 'create ticket' for escalation")
 
         if st.button("🗑️ Clear Conversation"):
-            st.session_state.conversation_history = []
-            st.session_state.messages = []
-            st.rerun()
+            try:
+                st.session_state.conversation_history = []
+                st.session_state.messages = []
+                st.session_state.user_input = ""
+                st.session_state.last_input = ""
+                st.rerun()
+            except StreamlitAPIException as error:
+                handle_ui_error(error, "The conversation could not be cleared.")
 
     # Main content
     st.markdown('<h1 class="main-header">IT Helpdesk Assistant</h1>', unsafe_allow_html=True)
