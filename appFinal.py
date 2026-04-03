@@ -204,7 +204,7 @@ def _write_ticket(ticket_record):
     description="Look up a corporate user by username. Use when the user asks to find user information."
 )
 def lookup_user(
-    username: Annotated[str, Field(description="Employee username, for example jdoe")]
+    username: Annotated[str, Field(description="Employee username, for example john.doe")]
 ) -> str:
     user = Tools.MOCK_USERS.get(username.lower())
     if not user:
@@ -213,7 +213,8 @@ def lookup_user(
     return (
         f"User found:\n"
         f"- Username: {user['username']}\n"
-        f"- Name: {user['name']}\n"
+        f"- First Name: {user['first_name']}\n"
+        f"- Last Name: {user['last_name']}\n"
         f"- Department: {user['department']}\n"
         f"- Email: {user['email']}\n"
         f"- Device ID: {user['device_id']}"
