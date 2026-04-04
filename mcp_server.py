@@ -1,8 +1,70 @@
-import uuid
-from datetime import datetime, timezone
+import os
+import base64
+
+import psycopg2
+import requests
+from dotenv import load_dotenv
 from fastmcp import FastMCP
 
+load_dotenv()
+
 mcp = FastMCP("IT Helpdesk MCP Server")
+
+
+def _postgres_conn_string() -> str:
+    return os.getenv("POSTGRES_CONNECTION_STRING", "")
+
+
+def _freshworks_endpoint() -> str:
+    domain = os.getenv("FRESHWORKS_DOMAIN", "")
+    if not domain:
+        return ""
+    return f"https://{domain}.freshservice.com/api/v2/tickets"
+
+
+def _map_severity_to_priority(severity: str) -> int:
+    mapping = {"Low": 1, "Medium": 2, "High": 3, "Critical": 4}
+    return mapping.get(severity, 2)
+
+
+def _map_severity_to_scale3(severity: str) -> int:
+    mapping = {"Low": 1, "Medium": 2, "High": 3, "Critical": 3}
+    return mapping.get(severity, 2)
+
+
+def _map_category_to_group_id(category: str) -> int:
+    mapping = {
+        "VPN": 40000430768,
+        "Email": 40000430767,
+        "MFA": 40000430756,
+        "Device": 40000430763,
+        "Account": 40000430756,
+        "Software": 40000430767,
+        "Hardware": 40000430763,
+        "General": 40000430769,
+    }
+    return mapping.get(category, 40000430769)
+
+
+def _map_category_to_ticket_type(category: str) -> str:
+    mapping = {
+        "VPN": "Incident",
+        "Email": "Incident",
+        "MFA": "Incident",
+        "Device": "Incident",
+        "Account": "Incident",
+        "Software": "Incident",
+        "Hardware": "Incident",
+        "General": "Service Request",
+    }
+    return mapping.get(category, "Service Request")
+
+
+def _resolve_requester_email(user: str) -> str:
+    default_email = os.getenv("FRESHWORKS_DEFAULT_REQUESTER_EMAIL", "helpdesk@corp.com")
+    if user and "@" in user:
+        return user
+    return default_email
 
 
 @mcp.tool
@@ -13,46 +75,130 @@ def create_ticket(
     severity: str = "Medium",
     impacted_system: str = "Unknown",
 ) -> dict:
-    """Create an IT support ticket."""
-    ticket_id = f"TCK-{uuid.uuid4().hex[:8].upper()}"
-    return {
-        "ticket_id": ticket_id,
-        "user": user,
-        "issue": issue,
-        "category": category,
-        "severity": severity,
-        "impacted_system": impacted_system,
-        "status": "Open",
-        "priority": severity,
-        "assignment_group": "IT Service Desk",
-        "created_at_utc": datetime.now(timezone.utc).isoformat(),
+    """Create an IT support ticket in Freshworks."""
+    freshworks_api_key = os.getenv("FRESHWORKS_API_KEY", "")
+    endpoint = _freshworks_endpoint()
+
+    if not freshworks_api_key or not endpoint:
+        return {
+            "error": "FRESHWORKS_API_KEY or FRESHWORKS_DOMAIN is not configured.",
+            "status": "failed",
+            "issue": issue,
+            "user": user,
+        }
+
+    auth = base64.b64encode(f"{freshworks_api_key}:".encode()).decode()
+    headers = {"Authorization": f"Basic {auth}", "Content-Type": "application/json"}
+
+    payload = {
+        "email": _resolve_requester_email(user),
+        "subject": issue[:100],
+        "description": f"Impacted System: {impacted_system}\nCategory: {category}\n\nIssue: {issue}",
+        "status": 2,
+        "priority": _map_severity_to_priority(severity),
+        "urgency": _map_severity_to_scale3(severity),
+        "impact": _map_severity_to_scale3(severity),
+        "source": 2,
+        "group_id": _map_category_to_group_id(category),
+        "type": _map_category_to_ticket_type(category),
     }
+
+    try:
+        response = requests.post(endpoint, json=payload, headers=headers, timeout=10)
+        if not response.ok:
+            return {
+                "error": f"FreshWorks API error ({response.status_code}): {response.text}",
+                "status": "failed",
+                "issue": issue,
+                "user": user,
+                "payload": payload,
+            }
+
+        ticket_data = response.json().get("ticket", {})
+        return {
+            "ticket_id": ticket_data.get("id"),
+            "ticket_number": ticket_data.get("ticket_number"),
+            "user": user,
+            "issue": issue,
+            "category": category,
+            "severity": severity,
+            "impacted_system": impacted_system,
+            "status": ticket_data.get("status"),
+            "priority": _map_severity_to_priority(severity),
+            "assignment_group": ticket_data.get("group_id"),
+            "created_at_utc": ticket_data.get("created_at"),
+            "url": f"https://{os.getenv('FRESHWORKS_DOMAIN')}.freshservice.com/support/tickets/{ticket_data.get('id')}",
+            "success": True,
+        }
+    except requests.RequestException as e:
+        return {
+            "error": f"FreshWorks request failed: {e}",
+            "status": "failed",
+            "issue": issue,
+            "user": user,
+        }
 
 
 @mcp.tool
 def lookup_user(username: str) -> dict:
-    """Look up a corporate user by username."""
-    mock_users = {
-        "jdoe": {"username": "jdoe", "name": "John Doe", "department": "Engineering", "email": "jdoe@corp.com", "device_id": "LAPTOP-1001"},
-        "asmith": {"username": "asmith", "name": "Alice Smith", "department": "HR", "email": "asmith@corp.com", "device_id": "LAPTOP-1002"},
-    }
-    user = mock_users.get(username.lower())
-    if not user:
-        return {"error": f"No user found for username '{username}'."}
-    return user
+    """Look up a corporate user by username (Postgres only)."""
+    conn = _postgres_conn_string()
+    if not conn:
+        return {"error": "POSTGRES_CONNECTION_STRING is not configured."}
+    try:
+        with psycopg2.connect(conn) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT username, first_name, last_name, department, email, device_id FROM demo.users WHERE LOWER(username) = %s",
+                    (username.lower(),),
+                )
+                row = cursor.fetchone()
+                if not row:
+                    return {"error": f"No user found for username '{username}'."}
+                return {
+                    "username": row[0],
+                    "first_name": row[1],
+                    "last_name": row[2],
+                    "department": row[3],
+                    "email": row[4],
+                    "device_id": row[5],
+                }
+    except psycopg2.Error as e:
+        return {"error": f"Database error: {e}"}
 
 
 @mcp.tool
-def check_device_status(device_id: str) -> dict:
-    """Check the status of a company device by device ID."""
-    mock_devices = {
-        "LAPTOP-1001": {"device_id": "LAPTOP-1001", "status": "Online", "vpn_client": "GlobalProtect 5.2", "last_seen": "2026-04-01T10:00:00Z"},
-        "LAPTOP-1002": {"device_id": "LAPTOP-1002", "status": "Offline", "vpn_client": "Cisco AnyConnect 4.10", "last_seen": "2026-03-30T15:30:00Z"},
-    }
-    device = mock_devices.get(device_id.upper())
-    if not device:
-        return {"error": f"No device found for device ID '{device_id}'."}
-    return device
+def check_device_status(device_or_username: str) -> dict:
+    """Check device state by device ID or username (Postgres only)."""
+    conn = _postgres_conn_string()
+    if not conn:
+        return {"error": "POSTGRES_CONNECTION_STRING is not configured."}
+    try:
+        with psycopg2.connect(conn) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT d.device_id, d.status, d.vpn_client, d.last_seen, u.username
+                    FROM demo.devices d
+                    LEFT JOIN demo.users u ON u.device_id = d.device_id
+                    WHERE UPPER(d.device_id) = UPPER(%s)
+                       OR LOWER(u.username) = LOWER(%s)
+                    LIMIT 1
+                    """,
+                    (device_or_username, device_or_username),
+                )
+                row = cursor.fetchone()
+                if not row:
+                    return {"error": f"No device found for identifier '{device_or_username}'."}
+                return {
+                    "device_id": row[0],
+                    "status": row[1],
+                    "vpn_client": row[2],
+                    "last_seen": str(row[3]),
+                    "username": row[4] or "unknown",
+                }
+    except psycopg2.Error as e:
+        return {"error": f"Database error: {e}"}
 
 
 # To run:

@@ -258,14 +258,17 @@ def submit_user_input(user_input):
     """Run one submission cycle and reset input state safely."""
     try:
         asyncio.run(process_user_input(user_input))
+        st.session_state.typing = False
         st.session_state.user_input = ""
         st.session_state.last_input = ""
         st.rerun()
     except StreamlitAPIException as error:
+        st.session_state.typing = False
         st.session_state.user_input = user_input
         st.session_state.last_input = user_input
         handle_ui_error(error, "The chat input could not be submitted.")
     except Exception as error:
+        st.session_state.typing = False
         st.session_state.user_input = user_input
         st.session_state.last_input = user_input
         handle_ui_error(error, "The request could not be processed.")
@@ -326,7 +329,7 @@ def main():
         # Process input
         if send_button and user_input:
             st.session_state.typing = True
-            asyncio.run(process_user_input(user_input))
+            submit_user_input(user_input)
             st.session_state.typing = False
 
     st.markdown("""
