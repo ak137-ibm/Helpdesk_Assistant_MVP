@@ -198,21 +198,38 @@ def create_ticket(
 
 
 @mcp.tool
-def lookup_user(username: str) -> dict:
-    """Look up a corporate user by username (Postgres only)."""
+def lookup_user(username: str = "", first_name: str = "", last_name: str = "") -> dict:
+    """Look up a corporate user by username OR by first and last name (Postgres only)."""
+    if not username and not (first_name and last_name):
+        return {
+            "success": False,
+            "error": "Provide either 'username' or both 'first_name' and 'last_name'.",
+            "data": None,
+        }
     conn = _postgres_conn_string()
     if not conn:
         return {"success": False, "error": "AZURE_POSTGRESQL_CONNECTION_STRING is not configured.", "data": None}
     try:
         with psycopg2.connect(conn) as connection:
             with connection.cursor() as cursor:
-                cursor.execute(
-                    "SELECT username, first_name, last_name, department, email, device_id FROM demo.users WHERE LOWER(username) = %s",
-                    (username.lower(),),
-                )
+                if username:
+                    cursor.execute(
+                        "SELECT username, first_name, last_name, department, email, device_id "
+                        "FROM demo.users WHERE LOWER(username) = %s",
+                        (username.lower(),),
+                    )
+                    not_found_msg = f"No user found for username '{username}'."
+                else:
+                    cursor.execute(
+                        "SELECT username, first_name, last_name, department, email, device_id "
+                        "FROM demo.users "
+                        "WHERE LOWER(first_name) = %s AND LOWER(last_name) = %s",
+                        (first_name.lower(), last_name.lower()),
+                    )
+                    not_found_msg = f"No user found for name '{first_name} {last_name}'."
                 row = cursor.fetchone()
                 if not row:
-                    return {"success": False, "error": f"No user found for username '{username}'.", "data": None}
+                    return {"success": False, "error": not_found_msg, "data": None}
                 return {
                     "success": True,
                     "error": None,
