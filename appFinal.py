@@ -152,8 +152,12 @@ LOOKUP_USERNAME_INPUT_PROMPT = "Please provide the username (for example, john.d
 LOOKUP_FIRST_NAME_PROMPT = "Please provide the first name."
 LOOKUP_LAST_NAME_PROMPT = "Please provide the last name."
 LOOKUP_DISAMBIGUATE_PROMPT = (
-    "Multiple users share that name. Please provide the device ID of the user you'd like to proceed with "
-    "(device IDs are listed above next to each match)."
+    "Multiple users found. Please enter the match number of the user you'd like to proceed with "
+    "(for example, reply with '1' for Match 1)."
+)
+LOOKUP_NEXT_ACTION_PROMPT = (
+    "What would you like to do next? Reply with 'device' to check device details "
+    "or 'ticket' to create a support ticket."
 )
 
 MAF_TRIAGE_INSTRUCTIONS = (
@@ -755,6 +759,44 @@ def last_assistant_asked_for_disambiguating_device_id(conversation_history) -> b
     return False
 
 
+def last_assistant_asked_for_lookup_next_action(conversation_history) -> bool:
+    """Return True when the most recent assistant message offered the device/ticket next-action prompt."""
+    for message in reversed(conversation_history):
+        if message.get("role") != "assistant":
+            continue
+        content = (message.get("content") or "").lower()
+        return LOOKUP_NEXT_ACTION_PROMPT.lower() in content
+    return False
+
+
+def get_username_from_lookup_result(conversation_history) -> str:
+    """Extract the username from the most recent 'User found:' or single-match assistant message."""
+    for message in reversed(conversation_history):
+        if message.get("role") != "assistant":
+            continue
+        content = message.get("content") or ""
+        if "user found:" in content.lower() or "match 1:" in content.lower():
+            match = re.search(r"-\s*Username:\s*(\S+)", content, re.IGNORECASE)
+            if match:
+                return match.group(1).strip()
+    return ""
+
+
+def get_user_by_match_number(conversation_history, match_num: int) -> str:
+    """Return the formatted user block for the given 1-based match number from the multi-match result in history."""
+    for message in reversed(conversation_history):
+        if message.get("role") != "assistant":
+            continue
+        content = message.get("content") or ""
+        if "users found with that name:" not in content.lower():
+            continue
+        pattern = rf"Match {match_num}:\n((?:- [^\n]+\n?)+)"
+        m = re.search(pattern, content, re.IGNORECASE)
+        if m:
+            return m.group(0).strip()
+    return ""
+
+
 def should_run_escalation_check(response_text):
     """
     Run escalation logic only for explicit unknown-answer outcomes.
@@ -1061,34 +1103,45 @@ async def handle_user_message(user_input, conversation_history):
 
     # ── Lookup method selection flow (explicit user-lookup requests) ─────────────
 
-    # Step 4c: Device ID provided to disambiguate multiple name matches
+    # Step 4c: Match number provided to select from multiple name matches
     if conversation_history and last_assistant_asked_for_disambiguating_device_id(conversation_history):
-        device_id = user_input.strip()
+        num_match = re.search(r"\b(\d+)\b", user_input)
+        if not num_match:
+            return LOOKUP_DISAMBIGUATE_PROMPT, True
+        match_num = int(num_match.group(1))
+        user_block = get_user_by_match_number(conversation_history, match_num)
+        if not user_block:
+            return LOOKUP_DISAMBIGUATE_PROMPT, True
+        print(f"[Agent Controller] Decision → DISAMBIGUATE by match number: {match_num}")
+        response_text = f"User found:\n{user_block}\n\n{LOOKUP_NEXT_ACTION_PROMPT}"
+        return response_text, True
+
+    # Step 4d: Next action chosen after a single successful lookup
+    if conversation_history and last_assistant_asked_for_lookup_next_action(conversation_history):
+        choice = user_input.strip().lower()
+        username = get_username_from_lookup_result(conversation_history)
         if not action_agent:
             return "Action agent is unavailable because Azure OpenAI settings are missing.", True
-        print(f"[Agent Controller] Decision → DISAMBIGUATE by device_id: {device_id}")
-        history_context = "\n".join(
-            f"{m['role'].upper()}: {m['content']}"
-            for m in conversation_history[-HISTORY_LIMIT:]
-        )
-        # Determine if a ticket was being created when disambiguation triggered
-        history_text = " ".join(m.get("content", "") for m in conversation_history).lower()
-        is_ticket_flow = any(s in history_text for s in TICKET_REQUEST_SIGNALS)
-        if is_ticket_flow:
-            disambig_prompt = (
-                f"Conversation history:\n{history_context}\n\n"
-                f"The user selected device ID '{device_id}' to identify the specific user for ticket creation. "
-                f"Use check_device_status with '{device_id}' to resolve the username, "
-                "then create the IT support ticket using that username and the issue details from the conversation history."
+        if "device" in choice:
+            print(f"[Agent Controller] Decision → CHECK DEVICE for username: {username}")
+            device_prompt = f"Use check_device_status with '{username}'. Display the full device details."
+            action_response = await action_agent.run(device_prompt)
+            return action_response.text, True
+        elif "ticket" in choice:
+            print(f"[Agent Controller] Decision → CREATE TICKET for username: {username}")
+            history_context = "\n".join(
+                f"{m['role'].upper()}: {m['content']}"
+                for m in conversation_history[-HISTORY_LIMIT:]
             )
+            ticket_prompt = (
+                f"Conversation history:\n{history_context}\n\n"
+                f"The user wants to create a support ticket for username '{username}'. "
+                "Collect any missing ticket details from the conversation history and create the ticket."
+            )
+            action_response = await action_agent.run(ticket_prompt)
+            return action_response.text, True
         else:
-            disambig_prompt = (
-                f"Conversation history:\n{history_context}\n\n"
-                f"The user selected device ID '{device_id}' to identify the specific user. "
-                f"Use check_device_status with '{device_id}' and display the full user and device details."
-            )
-        action_response = await action_agent.run(disambig_prompt)
-        return action_response.text, True
+            return LOOKUP_NEXT_ACTION_PROMPT, True  # re-ask if unclear
 
     # Step 4b: Last name received — perform name-based lookup
     if conversation_history and last_assistant_asked_for_lookup_last_name(conversation_history):
@@ -1104,7 +1157,10 @@ async def handle_user_message(user_input, conversation_history):
             "Display all the user details returned."
         )
         action_response = await action_agent.run(lookup_prompt)
-        return action_response.text, True
+        response_text = action_response.text
+        if "user found:" in response_text.lower():
+            response_text = response_text.rstrip() + f"\n\n{LOOKUP_NEXT_ACTION_PROMPT}"
+        return response_text, True
 
     # Step 3b: First name received — ask for last name
     if conversation_history and last_assistant_asked_for_lookup_first_name(conversation_history):
@@ -1122,7 +1178,10 @@ async def handle_user_message(user_input, conversation_history):
             "Display all the user details returned."
         )
         action_response = await action_agent.run(lookup_prompt)
-        return action_response.text, True
+        response_text = action_response.text
+        if "user found:" in response_text.lower():
+            response_text = response_text.rstrip() + f"\n\n{LOOKUP_NEXT_ACTION_PROMPT}"
+        return response_text, True
 
     # Step 2: Lookup method chosen — ask for the appropriate identifier
     if conversation_history and last_assistant_asked_lookup_method(conversation_history):

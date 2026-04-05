@@ -143,6 +143,11 @@ def _save_ticket_to_postgres(
     username: str,
     first_name: str = "",
     last_name: str = "",
+    category: str = "",
+    created_at: str = "",
+    subject: str = "",
+    description_text: str = "",
+    ticket_type: str = "",
 ) -> None:
     """Persist ticket details to demo.tickets. Resolves user_id and device_id from demo.users.
     Tries username first; falls back to first_name + last_name if username is missing or not found.
@@ -178,15 +183,10 @@ def _save_ticket_to_postgres(
                 cur.execute(
                     """
                     INSERT INTO demo.tickets
-                        (ticket_id, severity, status, assignment_group, user_id, device_id, update_timestamp)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
-                    ON CONFLICT (ticket_id) DO UPDATE SET
-                        severity         = EXCLUDED.severity,
-                        status           = EXCLUDED.status,
-                        assignment_group = EXCLUDED.assignment_group,
-                        user_id          = EXCLUDED.user_id,
-                        device_id        = EXCLUDED.device_id,
-                        update_timestamp = EXCLUDED.update_timestamp
+                        (ticket_id, severity, status, assignment_group, user_id, device_id,
+                         category, created_at, subject, description_text, ticket_type)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (ticket_id) DO NOTHING
                     """,
                     (
                         str(ticket_id)[:20],
@@ -195,7 +195,11 @@ def _save_ticket_to_postgres(
                         str(assignment_group)[:100] if assignment_group else None,
                         user_id,
                         device_id,
-                        datetime.datetime.utcnow(),
+                        category[:100] if category else None,
+                        created_at or None,
+                        subject[:255] if subject else None,
+                        description_text or None,
+                        ticket_type[:50] if ticket_type else None,
                     ),
                 )
         print(f"[Postgres] Ticket {ticket_id} saved to demo.tickets.")
@@ -264,6 +268,11 @@ def create_ticket(
             username=user,
             first_name=first_name,
             last_name=last_name,
+            category=category,
+            created_at=ticket_data.get("created_at", ""),
+            subject=ticket_data.get("subject", ""),
+            description_text=ticket_data.get("description_text", ""),
+            ticket_type=ticket_data.get("type", ""),
         )
 
         return {
