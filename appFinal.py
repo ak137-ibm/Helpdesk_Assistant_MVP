@@ -240,7 +240,7 @@ if OPENAI_ENDPOINT and OPENAI_KEY and OPENAI_DEPLOYMENT:
 
 _MCP_MAX_RETRIES = 3
 _MCP_RETRY_BACKOFF = [0.5, 1.5, 3.0]  # seconds between attempts
-_MCP_SERVER_URL = os.getenv("MCP_SERVER_URL", "http://127.0.0.1:8000/mcp")
+_MCP_SERVER_URL = os.getenv("MCP_SERVER_URL", "http://127.0.0.1:8001/mcp")
 
 
 def _call_mcp_tool(tool_name: str, args: dict):
