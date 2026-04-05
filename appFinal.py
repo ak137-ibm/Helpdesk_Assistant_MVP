@@ -33,7 +33,19 @@ from pydantic import Field
 from azure.search.documents import SearchClient
 from azure.core.credentials import AzureKeyCredential
 from openai import AzureOpenAI
-from agent_framework import tool
+try:
+    from agent_framework import tool
+except Exception:
+    # Fallback for older/incompatible agent_framework builds that do not expose `tool`.
+    def tool(*_args, **_kwargs):
+        def _decorator(func):
+            return func
+        return _decorator
+
+    print(
+        "[Startup Warning] agent_framework.tool unavailable; using no-op tool decorator.",
+        file=sys.stderr,
+    )
 from agent_framework.openai import OpenAIChatCompletionClient
 
 load_dotenv()
