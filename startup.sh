@@ -15,11 +15,11 @@ mkdir -p /tmp/mcp
 
 # Keep MCP internal-only inside the App Service container.
 export MCP_BIND_HOST=127.0.0.1
-export MCP_PORT=8000
-export MCP_SERVER_URL=http://127.0.0.1:8000/mcp
+export MCP_PORT=8001
+export MCP_SERVER_URL=http://127.0.0.1:8001/mcp
 
 # Start MCP server in background without blocking app warmup.
-echo "📡 Starting MCP Server on port 8000 (background)..."
+echo "📡 Starting MCP Server on port ${MCP_PORT} (background)..."
 python mcp_server.py --http > /tmp/mcp/server.log 2>&1 &
 MCP_PID=$!
 echo "MCP Server PID: $MCP_PID"
