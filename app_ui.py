@@ -101,6 +101,7 @@ st.markdown("""
         border-radius: 12px;
         border: 1px solid #c8d8eb;
         background-color: #ffffff;
+        color: #000000;
     }
     .sidebar-info {
         background: linear-gradient(160deg, #dff3ff, #e9f8ff);
@@ -310,15 +311,9 @@ def main():
 
     # Sidebar
     with st.sidebar:
-        st.markdown('<div class="sidebar-info">', unsafe_allow_html=True)
-        st.markdown("### 🛠️ IT Helpdesk Assistant Health Check")
-        # st.markdown("**Features:**")
-        # st.markdown("- Knowledge base search")
-        # st.markdown("- User lookup")
-        # st.markdown("- Device status check")
-        # st.markdown("- Ticket creation")
-        # st.markdown("- Smart escalation")
-        st.markdown('</div>', unsafe_allow_html=True)
+        st.markdown("""<div class="sidebar-info">
+            <h3 style="margin:0;">🛠️ IT Helpdesk Assistant<br>Health Check</h3>
+        </div>""", unsafe_allow_html=True)
 
         # ── MCP Server Status ──────────────────────────────
         health = st.session_state.get("health_status")
@@ -357,7 +352,7 @@ def main():
     with col_title:
         st.markdown('<h1 class="main-header">IT Helpdesk Assistant</h1>', unsafe_allow_html=True)
     with col_clear:
-        if st.button("🗑️ Clear", key="main_clear"):
+        if st.button("🗑️ Clear Conversation", key="main_clear"):
             st.session_state.conversation_history = []
             st.session_state.messages = []
             st.session_state.last_input = ""
@@ -385,6 +380,14 @@ def main():
         # Process input
         if send_button and user_input:
             submit_user_input(user_input)
+
+    # Auto-focus the text input after each render
+    st.markdown("""
+    <script>
+    const input = window.parent.document.querySelector('input[type="text"]');
+    if (input) { input.focus(); }
+    </script>
+    """, unsafe_allow_html=True)
 
     st.markdown("""
     <div style='margin-top:1rem;padding:0.8rem 1rem;border-top:1px solid rgba(20,70,120,0.14);text-align:center;color:#4f637a;font-size:0.86rem;'>
