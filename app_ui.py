@@ -310,15 +310,9 @@ def main():
 
     # Sidebar
     with st.sidebar:
-        st.markdown('<div class="sidebar-info">', unsafe_allow_html=True)
-        st.markdown("### 🛠️ IT Helpdesk Assistant \nHealth Check")
-        # st.markdown("**Features:**")
-        # st.markdown("- Knowledge base search")
-        # st.markdown("- User lookup")
-        # st.markdown("- Device status check")
-        # st.markdown("- Ticket creation")
-        # st.markdown("- Smart escalation")
-        st.markdown('</div>', unsafe_allow_html=True)
+        st.markdown("""<div class="sidebar-info">
+            <h3 style="margin:0;">🛠️ IT Helpdesk Assistant<br>Health Check</h3>
+        </div>""", unsafe_allow_html=True)
 
         # ── MCP Server Status ──────────────────────────────
         health = st.session_state.get("health_status")
