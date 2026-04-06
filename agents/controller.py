@@ -159,8 +159,6 @@ async def handle_user_message(user_input: str, conversation_history: list):
             final_response = escalation.check_escalation(response)
         else:
             final_response = response
-        if ESCALATION_SUFFIX in final_response:
-            final_response += "\n\nWould you like me to create a support ticket for this issue?"
         return final_response, True
 
     # Pre-check: long input — summarize and ask the user to verify
@@ -476,8 +474,8 @@ async def handle_user_message(user_input: str, conversation_history: list):
         print("[Agent Controller] Decision → FOLLOW-UP FAILURE → OFFER ESCALATION")
         return (
             "Thanks for trying those steps."
-            + ESCALATION_SUFFIX
             + "\n\nWould you like me to create a support ticket for this issue?"
+            + ESCALATION_SUFFIX
         ), True
 
     # Duplicate ticket guard
@@ -504,8 +502,5 @@ async def handle_user_message(user_input: str, conversation_history: list):
         final_response = escalation.check_escalation(response)
     else:
         final_response = response
-
-    if ESCALATION_SUFFIX in final_response:
-        final_response += "\n\nWould you like me to create a support ticket for this issue?"
 
     return final_response, True

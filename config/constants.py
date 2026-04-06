@@ -42,7 +42,7 @@ ESCALATION_TRIGGERS = [
     "not certain",
 ]
 
-ESCALATION_SUFFIX = "\n\n⚠️ Please contact IT support if the issue persists."
+ESCALATION_SUFFIX = "\n\n⚠️ If not, please contact IT support if the issue persists."
 
 TOOL_REQUEST_SIGNALS = [
     "lookup user",

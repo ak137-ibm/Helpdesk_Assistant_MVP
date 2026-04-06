@@ -10,7 +10,7 @@ MAF_KNOWLEDGE_INSTRUCTIONS = (
     "   - Do NOT use general knowledge, training data, or any information not present in those documents.\n"
     "   - Do NOT infer, assume, or extrapolate beyond what the documents explicitly state.\n"
     "2. If the RETRIEVED DOCUMENTS do not contain information relevant to the question, respond with exactly:\n"
-    "   'I do not know based on the knowledge base. Would you like me to connect to IT Support?'\n"
+    "   'I do not know based on the knowledge base. Would you like me to connect to IT Support and create a support ticket for this issue?'\n"
     "   - If the user asks for data outside the knowledge base, apply this refusal — do not attempt to answer.\n"
     "3. Format answers as numbered step-by-step troubleshooting instructions.\n"
     "4. Be concise and professional. No apologies or filler phrases.\n"

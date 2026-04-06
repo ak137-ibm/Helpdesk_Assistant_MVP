@@ -85,14 +85,14 @@ async def run_orchestrator(user_input: str, conversation_history: list) -> str:
             print(f"[Orchestrator] Error code {error_code} not found in retrieved docs — treating as KB miss")
             return (
                 "I do not know based on the knowledge base. "
-                "Would you like me to connect to IT Support?"
+                "Would you like me to connect to IT Support and create a support ticket for this issue?"
             )
 
         if not docs:
             print("[Orchestrator] No docs found — skipping KnowledgeAgent")
             return (
                 "I do not know based on the knowledge base. "
-                "Would you like me to connect to IT Support?"
+                "Would you like me to connect to IT Support and create a support ticket for this issue?"
             )
 
         numbered_docs = "\n\n".join(
