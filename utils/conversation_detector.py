@@ -387,7 +387,20 @@ class ConversationDetector:
                 continue
             content = message.get("content") or ""
             if "user found:" in content.lower() or "match 1:" in content.lower():
-                match = re.search(r"-\s*Username:\s*(\S+)", content, re.IGNORECASE)
+                match = re.search(r"-?\s*Username:\s*(\S+)", content, re.IGNORECASE)
+                if match:
+                    return match.group(1).strip()
+        return ""
+
+    @staticmethod
+    def get_device_id_from_lookup_result(conversation_history: list) -> str:
+        """Extract Device ID from the most recent user-lookup assistant message."""
+        for message in reversed(conversation_history):
+            if message.get("role") != "assistant":
+                continue
+            content = message.get("content") or ""
+            if "user found:" in content.lower() or "match 1:" in content.lower():
+                match = re.search(r"-?\s*Device\s*ID:\s*(\S+)", content, re.IGNORECASE)
                 if match:
                     return match.group(1).strip()
         return ""
