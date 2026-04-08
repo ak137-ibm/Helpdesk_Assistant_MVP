@@ -2,6 +2,7 @@ import os
 import re
 import base64
 import datetime
+import logging
 
 import psycopg2
 import requests
@@ -10,6 +11,8 @@ from dotenv import load_dotenv
 from fastmcp import FastMCP
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 mcp = FastMCP("IT Helpdesk MCP Server")
 
@@ -34,7 +37,7 @@ def _translate_to_english(text: str, source_language: str) -> str:
     """Translate *text* from *source_language* to English using Azure OpenAI.
     Returns the original text unchanged if the client is unavailable or the call fails."""
     if not _openai_client or not _oai_deployment:
-        print("[Translation] Azure OpenAI client not configured — skipping translation.")
+        logger.warning("Azure OpenAI client not configured — skipping translation.")
         return text
     try:
         response = _openai_client.chat.completions.create(
@@ -56,7 +59,7 @@ def _translate_to_english(text: str, source_language: str) -> str:
         translated = (response.choices[0].message.content or "").strip()
         return translated if translated else text
     except Exception as e:
-        print(f"[Translation] Failed to translate text: {e}")
+        logger.error("Failed to translate text: %s", e)
         return text
 
 # ---------------------------------------------------------------------------
@@ -92,46 +95,46 @@ def _guard(value: str, field_name: str) -> str | None:
     return None
 
 
-@mcp.tool
-def health_check() -> dict:
-    """Return server readiness status and connectivity checks for all dependencies."""
-    checks = {}
+# @mcp.tool
+# def health_check() -> dict:
+#     """Return server readiness status and connectivity checks for all dependencies."""
+#     checks = {}
 
-    # Postgres
-    conn_str = _postgres_conn_string()
-    if conn_str:
-        try:
-            with psycopg2.connect(conn_str) as conn:
-                with conn.cursor() as cur:
-                    cur.execute("SELECT 1")
-            checks["postgres"] = "ok"
-        except psycopg2.Error as e:
-            checks["postgres"] = f"error: {e}"
-    else:
-        checks["postgres"] = "not configured"
+#     # Postgres
+#     conn_str = _postgres_conn_string()
+#     if conn_str:
+#         try:
+#             with psycopg2.connect(conn_str) as conn:
+#                 with conn.cursor() as cur:
+#                     cur.execute("SELECT 1")
+#             checks["postgres"] = "ok"
+#         except psycopg2.Error as e:
+#             checks["postgres"] = f"error: {e}"
+#     else:
+#         checks["postgres"] = "not configured"
 
-    # Freshworks
-    if os.getenv("FRESHWORKS_API_KEY") and os.getenv("FRESHWORKS_DOMAIN"):
-        checks["freshworks"] = "configured"
-    else:
-        checks["freshworks"] = "not configured"
+#     # Freshworks
+#     if os.getenv("FRESHWORKS_API_KEY") and os.getenv("FRESHWORKS_DOMAIN"):
+#         checks["freshworks"] = "configured"
+#     else:
+#         checks["freshworks"] = "not configured"
 
-    # Azure OpenAI (translation)
-    if _openai_client and _oai_deployment:
-        checks["azure_openai"] = "configured"
-    else:
-        checks["azure_openai"] = "not configured"
+#     # Azure OpenAI (translation)
+#     if _openai_client and _oai_deployment:
+#         checks["azure_openai"] = "configured"
+#     else:
+#         checks["azure_openai"] = "not configured"
 
-    all_ok = all(v in ("ok", "configured") for v in checks.values())
-    return {
-        "success": all_ok,
-        "error": None if all_ok else "One or more dependencies are unavailable",
-        "data": {
-            "status": "ready" if all_ok else "degraded",
-            "checks": checks,
-            "timestamp_utc": datetime.datetime.utcnow().isoformat(),
-        },
-    }
+#     all_ok = all(v in ("ok", "configured") for v in checks.values())
+#     return {
+#         "success": all_ok,
+#         "error": None if all_ok else "One or more dependencies are unavailable",
+#         "data": {
+#             "status": "ready" if all_ok else "degraded",
+#             "checks": checks,
+#             "timestamp_utc": datetime.datetime.utcnow().isoformat(),
+#         },
+#     }
 
 
 def _postgres_conn_string() -> str:
@@ -254,7 +257,7 @@ def _resolve_requester_email(
                         requester_email = row[0] or ""
                         device_id = row[1] or ""
         except psycopg2.Error as e:
-            print(f"[_resolve_requester_email] DB lookup failed: {e}")
+            logger.error("DB lookup failed in _resolve_requester_email: %s", e)
 
     if not requester_email:
         requester_email = default_email
@@ -300,7 +303,7 @@ def _save_ticket_to_postgres(
     Non-fatal: logs errors but never raises so ticket creation always succeeds."""
     conn_str = _postgres_conn_string()
     if not conn_str:
-        print("[Postgres] Connection string not configured — skipping ticket save.")
+        logger.warning("Postgres connection string not configured — skipping ticket save.")
         return
     try:
         with psycopg2.connect(conn_str) as conn:
@@ -350,9 +353,9 @@ def _save_ticket_to_postgres(
                         source_language[:50] if source_language else None,
                     ),
                 )
-        print(f"[Postgres] Ticket {ticket_id} saved to demo.tickets.")
+        logger.info("Ticket %s saved to demo.tickets.", ticket_id)
     except psycopg2.Error as e:
-        print(f"[Postgres] Failed to save ticket {ticket_id} to demo.tickets: {e}")
+        logger.error("Failed to save ticket %s to demo.tickets: %s", ticket_id, e)
 
 
 @mcp.tool
