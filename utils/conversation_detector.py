@@ -190,7 +190,8 @@ class ConversationDetector:
 
     @staticmethod
     def get_kb_ticket_first_name_from_history(conversation_history: list) -> str:
-        for i, msg in enumerate(conversation_history):
+        for i in range(len(conversation_history) - 1, -1, -1):
+            msg = conversation_history[i]
             if (
                 msg.get("role") == "assistant"
                 and KB_TICKET_FIRST_NAME_PROMPT.lower() in (msg.get("content") or "").lower()
@@ -358,7 +359,8 @@ class ConversationDetector:
 
     @staticmethod
     def get_first_name_from_lookup_history(conversation_history: list) -> str:
-        for i, msg in enumerate(conversation_history):
+        for i in range(len(conversation_history) - 1, -1, -1):
+            msg = conversation_history[i]
             if (
                 msg.get("role") == "assistant"
                 and LOOKUP_FIRST_NAME_PROMPT.lower() in (msg.get("content") or "").lower()
@@ -370,7 +372,8 @@ class ConversationDetector:
 
     @staticmethod
     def get_ticket_lookup_first_name_from_history(conversation_history: list) -> str:
-        for i, msg in enumerate(conversation_history):
+        for i in range(len(conversation_history) - 1, -1, -1):
+            msg = conversation_history[i]
             if (
                 msg.get("role") == "assistant"
                 and TICKET_LOOKUP_USER_PROMPT.lower() in (msg.get("content") or "").lower()
